@@ -105,9 +105,18 @@ function sumApps(doc: Json, path: string): number | null | undefined {
   return vals.some((v) => v === null) ? null : (vals as number[]).reduce((a, b) => a + b, 0);
 }
 
+/** Status a single value signals: firing alarms are an error, 5xx responses a warning. */
+function valueTone(key: string, v: Json): StatusColor | null {
+  if (typeof v !== "number" || v <= 0) return null;
+  if (key === "inAlarm") return "error";
+  if (key === "errors5xx") return "warning";
+  return null;
+}
+
 function appStatus(app: Json): StatusColor {
+  if (valueTone("inAlarm", metric(app, "health.alarms.inAlarm"))) return "error";
   if (hasErrorNode(app)) return "warning";
-  if ((app.health?.alarms?.inAlarm ?? 0) > 0) return "warning";
+  if (valueTone("errors5xx", metric(app, "monitoring.totals.errors5xx"))) return "warning";
   if ((app.health?.freshness?.staleStates ?? 0) > 0) return "warning";
   return "success";
 }
@@ -195,7 +204,7 @@ async function refresh(api: PluginApi, signal?: AbortSignal) {
     await api.storage.set(CACHE_KEY, data);
     setState({ data, error: null });
     let status = docStatus(data);
-    let tip = status === "success" ? "Metrics up to date" : "Metrics need attention";
+    let tip = status === "success" ? "Metrics up to date" : status === "error" ? "Alarms firing" : "Metrics need attention";
     try {
       await syncHistory(api, bucket);
     } catch (e) {
@@ -462,7 +471,7 @@ function BarList({ api, rows }: { api: PluginApi; rows: BarRow[] }) {
   );
 }
 
-function Tile({ api, label, value, delta }: { api: PluginApi; label: string; value: string; delta?: string | null }) {
+function Tile({ api, label, value, delta, tone }: { api: PluginApi; label: string; value: string; delta?: string | null; tone?: StatusColor | null }) {
   const p = api.theme.palette;
   return (
     <div
@@ -479,7 +488,7 @@ function Tile({ api, label, value, delta }: { api: PluginApi; label: string; val
       }}
     >
       <span style={{ color: p.textMuted, fontSize: 12 }}>{label}</span>
-      <span style={{ fontSize: 22, lineHeight: "30px", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{value}</span>
+      <span style={{ fontSize: 22, lineHeight: "30px", fontWeight: 600, fontVariantNumeric: "tabular-nums", color: tone ? p.status[tone] : undefined }}>{value}</span>
       {delta && <span style={{ color: p.textMuted, fontSize: 12 }}>{delta}</span>}
     </div>
   );
@@ -549,7 +558,7 @@ function trendTile(api: PluginApi, days: Day[], t: Trend) {
     const abs = MONEY_KEY.test(t.key) ? money.format(Math.abs(d)) : Math.abs(d).toLocaleString();
     delta = `${d > 0 ? "+" : d < 0 ? "-" : "±"}${abs} vs ${shortDate(days[days.length - 2].date)}`;
   }
-  return <Tile key={t.title} api={api} label={t.title} value={fmt(cur, t.key)} delta={delta} />;
+  return <Tile key={t.title} api={api} label={t.title} value={fmt(cur, t.key)} delta={delta} tone={valueTone(t.key, cur)} />;
 }
 
 /** One card per trend that has data; rendered as a fragment so the cards join the surrounding Flow. */
@@ -622,8 +631,8 @@ const OVERVIEW_TRENDS: Trend[] = [
   { title: "AWS Cost (30d)", key: "cost", get: (d) => metric(d, "awsCost.total") },
   { title: "Requests (24h)", key: "", get: (d) => sumApps(d, "monitoring.totals.requests") },
   { title: "Lambda Errors (24h)", key: "", get: (d) => sumApps(d, "monitoring.totals.lambdaErrors") },
-  { title: "5xx Errors (24h)", key: "", get: (d) => sumApps(d, "monitoring.totals.errors5xx") },
-  { title: "Alarms Firing", key: "", get: (d) => sumApps(d, "health.alarms.inAlarm") },
+  { title: "5xx Errors (24h)", key: "errors5xx", get: (d) => sumApps(d, "monitoring.totals.errors5xx") },
+  { title: "Alarms Firing", key: "inAlarm", get: (d) => sumApps(d, "health.alarms.inAlarm") },
   { title: "Paying Customers", key: "", get: (d) => sumApps(d, "customers.paying") },
 ];
 
@@ -734,7 +743,9 @@ function Rows({ api, value, path = "" }: { api: PluginApi; value: Json; path?: s
         return (
           <div key={k} style={{ display: "contents" }}>
             <span style={{ color: p.textMuted }}>{titleCase(k)}</span>
-            <span>{nested ? Array.isArray(v) ? <span>{v.length ? v.join(", ") : "None"}</span> : <Rows api={api} value={v} path={k} /> : fmt(v, k)}</span>
+            <span style={{ color: valueTone(k, v) ? p.status[valueTone(k, v) as StatusColor] : undefined }}>
+              {nested ? Array.isArray(v) ? <span>{v.length ? v.join(", ") : "None"}</span> : <Rows api={api} value={v} path={k} /> : fmt(v, k)}
+            </span>
           </div>
         );
       })}
