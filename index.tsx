@@ -113,6 +113,21 @@ function valueTone(key: string, v: Json): StatusColor | null {
   return null;
 }
 
+/** Worst tone of any value in a group: firing alarms -> error; 5xx, stale states or unknown sections -> warning. */
+function groupTone(v: Json): StatusColor | null {
+  if (isErrorNode(v)) return "warning";
+  if (!v || typeof v !== "object") return null;
+  const tones: StatusColor[] = [];
+  const walk = (o: Json) =>
+    Object.entries(o).forEach(([k, x]) => {
+      const t = valueTone(k, x) ?? (k === "staleStates" && typeof x === "number" && x > 0 ? "warning" : null) ?? (isErrorNode(x) ? "warning" : null);
+      if (t) tones.push(t);
+      else if (x && typeof x === "object") walk(x);
+    });
+  walk(v);
+  return tones.length ? worst(tones) : null;
+}
+
 function appStatus(app: Json): StatusColor {
   if (valueTone("inAlarm", metric(app, "health.alarms.inAlarm"))) return "error";
   if (hasErrorNode(app)) return "warning";
@@ -197,7 +212,6 @@ async function refresh(api: PluginApi, signal?: AbortSignal) {
       /* deactivated */
     }
   };
-  setIcon("in-progress", "Refreshing");
   try {
     const bucket = (await api.settings.get<Settings>()).bucket || DEFAULT_BUCKET;
     const data = JSON.parse(await aws(api, ["s3", "cp", `s3://${bucket}/metrics.json`, "-"]));
@@ -214,7 +228,8 @@ async function refresh(api: PluginApi, signal?: AbortSignal) {
       tip = `History sync failed: ${msg}`;
     }
     setState({ loading: false });
-    setIcon(status, tip);
+    // The icon only signals problems; anything short of warning stays idle (default tint).
+    setIcon(status === "warning" || status === "error" ? status : "idle", tip);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     setState({ error: msg, loading: false });
@@ -479,7 +494,7 @@ function Tile({ api, label, value, delta, tone }: { api: PluginApi; label: strin
         minWidth: 0,
         boxSizing: "border-box",
         background: p.surface,
-        border: `1px solid ${p.border}`,
+        border: `1px solid ${tone ? p.status[tone] : p.border}`,
         borderRadius: 6,
         padding: "10px 12px",
         display: "flex",
@@ -513,15 +528,19 @@ function TileRow({ children }: { children: ReactNode[] }) {
 
 const Flow = ({ children }: { children: ReactNode }) => <div style={{ display: "flex", flexWrap: "wrap", alignItems: "stretch", gap: 12 }}>{children}</div>;
 
-function Section({ api, title, extra, children }: { api: PluginApi; title: string; extra?: ReactNode; children: ReactNode }) {
+/** Only warning/error tones outline a card; anything else keeps the normal border. */
+const alertTone = (s: StatusColor | null | undefined): StatusColor | null => (s === "warning" || s === "error" ? s : null);
+
+function Section({ api, title, extra, tone, children }: { api: PluginApi; title: string; extra?: ReactNode; tone?: StatusColor | null; children: ReactNode }) {
   const p = api.theme.palette;
+  const t = alertTone(tone);
   return (
     <div
       style={{
         flex: "1 1 320px",
         boxSizing: "border-box",
         background: p.surface,
-        border: `1px solid ${p.border}`,
+        border: `1px solid ${t ? p.status[t] : p.border}`,
         borderRadius: 6,
         padding: 12,
         display: "flex",
@@ -650,7 +669,7 @@ function Overview({ api, doc, days }: { api: PluginApi; doc: Json; days: Day[] }
         {Object.entries(OVERVIEW_ONLY_APPS).map(([name, title]) => (
           <InvocationsTrend key={name} api={api} days={days} appName={name} title={title} />
         ))}
-        <Section api={api} title="Apps">
+        <Section api={api} title="Apps" tone={worst(apps.map(appStatus))}>
           <div style={{ display: "grid", gridTemplateColumns: "auto 1fr max-content max-content max-content", gap: "4px 12px", alignItems: "center" }}>
             {["", "App", "Requests", "Errors", "Profit (30d)"].map((h) => (
               <span key={h || "dot"} style={{ color: p.textMuted, fontSize: 12 }}>
@@ -781,7 +800,7 @@ function AppView({ api, app, days }: { api: PluginApi; app: Json; days: Day[] })
       <Flow>
         <TrendCharts api={api} days={appDays} trends={APP_TRENDS} />
         {mon && isErrorNode(mon) && (
-          <Section api={api} title="Monitoring (24h)">
+          <Section api={api} title="Monitoring (24h)" tone="warning">
             <span>{fmt(mon)}</span>
           </Section>
         )}
@@ -789,6 +808,7 @@ function AppView({ api, app, days }: { api: PluginApi; app: Json; days: Day[] })
           <Section
             api={api}
             title="API Requests (24h)"
+            tone={apis.some((r) => r.segments.some((s) => s.name === "5xx" && s.value > 0)) ? "warning" : null}
             extra={
               <Legend
                 api={api}
@@ -854,7 +874,7 @@ function AppView({ api, app, days }: { api: PluginApi; app: Json; days: Day[] })
           </Section>
         )}
         {details.map(([k, v]) => (
-          <Section key={k} api={api} title={titleCase(k)}>
+          <Section key={k} api={api} title={titleCase(k)} tone={groupTone(v)}>
             <Rows
               api={api}
               value={k === "audience" && v && !isErrorNode(v) ? Object.fromEntries(Object.entries(v).filter(([kk]) => kk !== "days" && kk !== "sources30d")) : v}
