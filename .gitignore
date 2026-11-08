@@ -1,2 +1,8 @@
 node_modules
 *.zip
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# synced S3 metrics history (plugin data)
+/history/
