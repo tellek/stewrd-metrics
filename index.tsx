@@ -109,6 +109,7 @@ function sumApps(doc: Json, path: string): number | null | undefined {
 function valueTone(key: string, v: Json): StatusColor | null {
   if (typeof v !== "number" || v <= 0) return null;
   if (key === "inAlarm") return "error";
+  if (key === "lambdaErrors") return "error";
   if (key === "errors5xx") return "warning";
   return null;
 }
@@ -130,6 +131,7 @@ function groupTone(v: Json): StatusColor | null {
 
 function appStatus(app: Json): StatusColor {
   if (valueTone("inAlarm", metric(app, "health.alarms.inAlarm"))) return "error";
+  if (valueTone("lambdaErrors", metric(app, "monitoring.totals.lambdaErrors"))) return "error";
   if (hasErrorNode(app)) return "warning";
   if (valueTone("errors5xx", metric(app, "monitoring.totals.errors5xx"))) return "warning";
   if ((app.health?.freshness?.staleStates ?? 0) > 0) return "warning";
@@ -218,7 +220,7 @@ async function refresh(api: PluginApi, signal?: AbortSignal) {
     await api.storage.set(CACHE_KEY, data);
     setState({ data, error: null });
     let status = docStatus(data);
-    let tip = status === "success" ? "Metrics up to date" : status === "error" ? "Alarms firing" : "Metrics need attention";
+    let tip = status === "success" ? "Metrics up to date" : status === "error" ? "Alarms firing or Lambda errors" : "Metrics need attention";
     try {
       await syncHistory(api, bucket);
     } catch (e) {
@@ -640,7 +642,7 @@ function InvocationsTrend({ api, days, appName, title }: { api: PluginApi; days:
     { name: "Errors", color: p.status.error, values: appDays.map((d) => lambdaSum(d.app, "errors") ?? null) },
   ];
   return (
-    <Section api={api} title={title} extra={<Legend api={api} items={series} />}>
+    <Section api={api} title={title} tone={valueTone("lambdaErrors", series[1].values[series[1].values.length - 1])} extra={<Legend api={api} items={series} />}>
       <LineChart api={api} labels={appDays.map((d) => shortDate(d.date))} series={series} format={axisFmt("")} />
     </Section>
   );
@@ -649,7 +651,7 @@ function InvocationsTrend({ api, days, appName, title }: { api: PluginApi; days:
 const OVERVIEW_TRENDS: Trend[] = [
   { title: "AWS Cost (30d)", key: "cost", get: (d) => metric(d, "awsCost.total") },
   { title: "Requests (24h)", key: "", get: (d) => sumApps(d, "monitoring.totals.requests") },
-  { title: "Lambda Errors (24h)", key: "", get: (d) => sumApps(d, "monitoring.totals.lambdaErrors") },
+  { title: "Lambda Errors (24h)", key: "lambdaErrors", get: (d) => sumApps(d, "monitoring.totals.lambdaErrors") },
   { title: "5xx Errors (24h)", key: "errors5xx", get: (d) => sumApps(d, "monitoring.totals.errors5xx") },
   { title: "Alarms Firing", key: "inAlarm", get: (d) => sumApps(d, "health.alarms.inAlarm") },
   { title: "Paying Customers", key: "", get: (d) => sumApps(d, "customers.paying") },
@@ -776,7 +778,7 @@ const titleCase = (s: string) => s.replace(/([A-Z])/g, " $1").replace(/^./, (c) 
 
 const APP_TRENDS: Trend[] = [
   { title: "Requests (24h)", key: "", get: (a) => metric(a, "monitoring.totals.requests") },
-  { title: "Lambda Errors (24h)", key: "", get: (a) => metric(a, "monitoring.totals.lambdaErrors") },
+  { title: "Lambda Errors (24h)", key: "lambdaErrors", get: (a) => metric(a, "monitoring.totals.lambdaErrors") },
   { title: "Paying Customers", key: "", get: (a) => metric(a, "customers.paying") },
   { title: "MRR", key: "mrr", get: (a) => metric(a, "money.mrr") },
   { title: "Profit (30d)", key: "profit", get: (a) => metric(a, "money.profit30d") },
@@ -827,6 +829,7 @@ function AppView({ api, app, days }: { api: PluginApi; app: Json; days: Day[] })
           <Section
             api={api}
             title="Lambda Invocations (24h)"
+            tone={lambdas.rows.some((r) => r.segments.some((s) => s.name === "Errors" && s.value > 0)) ? "error" : null}
             extra={
               <Legend
                 api={api}
