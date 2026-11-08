@@ -276,13 +276,14 @@ function Tooltip({ p, x, y, flip, fixed, children }: { p: Palette; x: number; y:
   );
 }
 
-interface Pt {
-  label: string;
-  value: number | null;
+interface Series {
+  name: string;
+  color: string;
+  values: (number | null)[];
 }
 
-/** Single-series line over time. Unknown (null) points break the line instead of dropping to zero. */
-function LineChart({ api, points, format, height = CHART_HEIGHT }: { api: PluginApi; points: Pt[]; format: (n: number) => string; height?: number }) {
+/** Line chart over time on one shared axis. Unknown (null) points break a line instead of dropping to zero; a lone series also gets an area fill. */
+function LineChart({ api, labels, series, format, height = CHART_HEIGHT }: { api: PluginApi; labels: string[]; series: Series[]; format: (n: number) => string; height?: number }) {
   const p = api.theme.palette;
   const [ref, width] = useWidth();
   const [hover, setHover] = useState<number | null>(null);
@@ -292,22 +293,23 @@ function LineChart({ api, points, format, height = CHART_HEIGHT }: { api: Plugin
     B = 22;
   const w = Math.max(1, width - L - R);
   const h = height - T - B;
-  const n = points.length;
-  const max = niceMax(Math.max(0, ...points.map((pt) => pt.value ?? 0)));
+  const n = labels.length;
+  const max = niceMax(Math.max(0, ...series.flatMap((s) => s.values.map((v) => v ?? 0))));
   const x = (i: number) => L + (n <= 1 ? w / 2 : (i * w) / (n - 1));
   const y = (v: number) => T + h - (v / max) * h;
 
-  const runs: number[][] = [];
-  let cur: number[] = [];
-  points.forEach((pt, i) => {
-    if (pt.value === null) {
-      if (cur.length) runs.push(cur);
-      cur = [];
-    } else cur.push(i);
-  });
-  if (cur.length) runs.push(cur);
-  const line = (run: number[]) => run.map((i, k) => `${k ? "L" : "M"}${x(i)},${y(points[i].value as number)}`).join("");
-  const lastKnown = [...points.keys()].reverse().find((i) => points[i].value !== null);
+  const runsOf = (values: (number | null)[]) => {
+    const runs: number[][] = [];
+    let cur: number[] = [];
+    values.forEach((v, i) => {
+      if (v === null) {
+        if (cur.length) runs.push(cur);
+        cur = [];
+      } else cur.push(i);
+    });
+    if (cur.length) runs.push(cur);
+    return runs;
+  };
 
   const onMove = (e: MouseEvent<SVGRectElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -317,6 +319,7 @@ function LineChart({ api, points, format, height = CHART_HEIGHT }: { api: Plugin
 
   const xLabels = n <= 1 ? [0] : n === 2 ? [0, 1] : [0, Math.floor((n - 1) / 2), n - 1];
   const anchor = (i: number) => (n <= 1 ? "middle" : i === 0 ? "start" : i === n - 1 ? "end" : "middle");
+  const flip = hover !== null && x(hover) > width - 160;
 
   return (
     <div ref={ref} style={{ position: "relative", height }}>
@@ -332,38 +335,48 @@ function LineChart({ api, points, format, height = CHART_HEIGHT }: { api: Plugin
           ))}
           {xLabels.map((i) => (
             <text key={i} x={x(i)} y={height - 4} textAnchor={anchor(i)} fill={p.textMuted}>
-              {points[i]?.label}
+              {labels[i]}
             </text>
           ))}
-          {runs.map((run) =>
-            run.length > 1 ? (
-              <g key={run[0]}>
-                <path d={`${line(run)}L${x(run[run.length - 1])},${y(0)}L${x(run[0])},${y(0)}Z`} fill={p.accent} fillOpacity={0.12} />
-                <path d={line(run)} fill="none" stroke={p.accent} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+          {series.map((s) => {
+            const runs = runsOf(s.values);
+            const line = (run: number[]) => run.map((i, k) => `${k ? "L" : "M"}${x(i)},${y(s.values[i] as number)}`).join("");
+            const lastKnown = [...s.values.keys()].reverse().find((i) => s.values[i] !== null);
+            return (
+              <g key={s.name}>
+                {runs.map((run) =>
+                  run.length > 1 ? (
+                    <g key={run[0]}>
+                      {series.length === 1 && <path d={`${line(run)}L${x(run[run.length - 1])},${y(0)}L${x(run[0])},${y(0)}Z`} fill={s.color} fillOpacity={0.12} />}
+                      <path d={line(run)} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+                    </g>
+                  ) : (
+                    <circle key={run[0]} cx={x(run[0])} cy={y(s.values[run[0]] as number)} r={3} fill={s.color} />
+                  ),
+                )}
+                {lastKnown !== undefined && hover === null && (
+                  <circle cx={x(lastKnown)} cy={y(s.values[lastKnown] as number)} r={3.5} fill={s.color} stroke={p.surface} strokeWidth={2} />
+                )}
+                {hover !== null && s.values[hover] !== null && (
+                  <circle cx={x(hover)} cy={y(s.values[hover] as number)} r={4.5} fill={s.color} stroke={p.surface} strokeWidth={2} pointerEvents="none" />
+                )}
               </g>
-            ) : null,
-          )}
-          {runs
-            .filter((run) => run.length === 1)
-            .map((run) => (
-              <circle key={run[0]} cx={x(run[0])} cy={y(points[run[0]].value as number)} r={3} fill={p.accent} />
-            ))}
-          {lastKnown !== undefined && hover === null && (
-            <circle cx={x(lastKnown)} cy={y(points[lastKnown].value as number)} r={3.5} fill={p.accent} stroke={p.surface} strokeWidth={2} />
-          )}
-          {hover !== null && (
-            <g pointerEvents="none">
-              <line x1={x(hover)} x2={x(hover)} y1={T} y2={T + h} stroke={p.textMuted} strokeWidth={1} />
-              {points[hover].value !== null && <circle cx={x(hover)} cy={y(points[hover].value as number)} r={4.5} fill={p.accent} stroke={p.surface} strokeWidth={2} />}
-            </g>
-          )}
+            );
+          })}
+          {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={T} y2={T + h} stroke={p.textMuted} strokeWidth={1} pointerEvents="none" />}
           <rect x={L} y={0} width={w} height={height} fill="transparent" onMouseMove={onMove} onMouseLeave={() => setHover(null)} />
         </svg>
       )}
       {hover !== null && (
-        <Tooltip p={p} x={x(hover) + (x(hover) > width - 140 ? -10 : 10)} y={T} flip={x(hover) > width - 140}>
-          <div style={{ color: p.textMuted }}>{points[hover].label}</div>
-          <div>{points[hover].value === null ? "Unknown" : format(points[hover].value as number)}</div>
+        <Tooltip p={p} x={x(hover) + (flip ? -10 : 10)} y={T} flip={flip}>
+          <div style={{ color: p.textMuted }}>{labels[hover]}</div>
+          {series.map((s) => (
+            <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {series.length > 1 && <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color }} />}
+              {series.length > 1 && <span style={{ color: p.textMuted }}>{s.name}</span>}
+              <span>{s.values[hover] === null ? "Unknown" : format(s.values[hover] as number)}</span>
+            </div>
+          ))}
         </Tooltip>
       )}
     </div>
@@ -405,7 +418,7 @@ function BarList({ api, rows }: { api: PluginApi; rows: BarRow[] }) {
   if (rows.length === 0) return <span style={{ color: p.textMuted }}>None</span>;
   const flip = hover !== null && hover.x > window.innerWidth - 200;
   return (
-    <div style={{ ...scrollbarStyle(p), maxHeight: CHART_HEIGHT, overflowY: "auto", overflowX: "hidden" }} onMouseLeave={() => setHover(null)}>
+    <div style={{ ...scrollbarStyle(p), maxHeight: CHART_HEIGHT, overflowY: "auto", overflowX: "hidden", paddingRight: GAP }} onMouseLeave={() => setHover(null)}>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, max-content) 1fr max-content", gap: "2px 12px", alignItems: "center", fontSize: 14 }}>
         {rows.map((r, i) => {
           const total = r.segments.reduce((a, s) => a + s.value, 0);
@@ -453,7 +466,17 @@ function Tile({ api, label, value, delta }: { api: PluginApi; label: string; val
   const p = api.theme.palette;
   return (
     <div
-      style={{ minWidth: 0, boxSizing: "border-box", background: p.surface, border: `1px solid ${p.border}`, borderRadius: 6, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 2 }}
+      style={{
+        minWidth: 0,
+        boxSizing: "border-box",
+        background: p.surface,
+        border: `1px solid ${p.border}`,
+        borderRadius: 6,
+        padding: "10px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+      }}
     >
       <span style={{ color: p.textMuted, fontSize: 12 }}>{label}</span>
       <span style={{ fontSize: 22, lineHeight: "30px", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{value}</span>
@@ -538,7 +561,12 @@ function TrendCharts({ api, days, trends }: { api: PluginApi; days: Day[]; trend
         .filter(({ points }) => points.some((pt) => pt.raw !== undefined))
         .map(({ t, points }) => (
           <Section key={t.title} api={api} title={`${t.title} Trend`}>
-            <LineChart api={api} points={points.map((pt) => ({ label: pt.label, value: pt.raw ?? null }))} format={axisFmt(t.key)} />
+            <LineChart
+              api={api}
+              labels={points.map((pt) => pt.label)}
+              series={[{ name: t.title, color: api.theme.palette.accent, values: points.map((pt) => pt.raw ?? null) }]}
+              format={axisFmt(t.key)}
+            />
           </Section>
         ))}
     </>
@@ -563,6 +591,33 @@ function costRows(api: PluginApi, cost: Json): BarRow[] {
     }));
 }
 
+/** Apps too small for their own tab; they get one invocations-vs-errors card on the Overview instead. */
+const OVERVIEW_ONLY_APPS: Record<string, string> = { SecretsManager: "Global Secrets Trend" };
+
+/** Sum of a Lambda metric across an app's functions; unknown if any function's value is unknown. */
+function lambdaSum(app: Json, field: "invocations" | "errors"): number | null | undefined {
+  const lambdas = app?.monitoring?.lambdas;
+  if (lambdas === undefined) return undefined;
+  if (lambdas === null || isErrorNode(lambdas) || isErrorNode(app.monitoring)) return null;
+  const vals = Object.values(lambdas).map((v) => metric(v, field));
+  return vals.some((v) => typeof v !== "number") ? null : (vals as number[]).reduce((a, b) => a + b, 0);
+}
+
+function InvocationsTrend({ api, days, appName, title }: { api: PluginApi; days: Day[]; appName: string; title: string }) {
+  const p = api.theme.palette;
+  const appDays = days.map((d) => ({ date: d.date, app: appsOf(d.doc).find((a) => a.name === appName) })).filter((d) => d.app);
+  if (appDays.length === 0) return null;
+  const series: Series[] = [
+    { name: "Invocations", color: p.accent, values: appDays.map((d) => lambdaSum(d.app, "invocations") ?? null) },
+    { name: "Errors", color: p.status.error, values: appDays.map((d) => lambdaSum(d.app, "errors") ?? null) },
+  ];
+  return (
+    <Section api={api} title={title} extra={<Legend api={api} items={series} />}>
+      <LineChart api={api} labels={appDays.map((d) => shortDate(d.date))} series={series} format={axisFmt("")} />
+    </Section>
+  );
+}
+
 const OVERVIEW_TRENDS: Trend[] = [
   { title: "AWS Cost (30d)", key: "cost", get: (d) => metric(d, "awsCost.total") },
   { title: "Requests (24h)", key: "", get: (d) => sumApps(d, "monitoring.totals.requests") },
@@ -583,8 +638,11 @@ function Overview({ api, doc, days }: { api: PluginApi; doc: Json; days: Day[] }
       <HistoryHint api={api} days={days} />
       <Flow>
         <TrendCharts api={api} days={days} trends={OVERVIEW_TRENDS.slice(0, 3)} />
+        {Object.entries(OVERVIEW_ONLY_APPS).map(([name, title]) => (
+          <InvocationsTrend key={name} api={api} days={days} appName={name} title={title} />
+        ))}
         <Section api={api} title="Apps">
-          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr max-content max-content max-content", gap: "4px 16px", alignItems: "center" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr max-content max-content max-content", gap: "4px 12px", alignItems: "center" }}>
             {["", "App", "Requests", "Errors", "Profit (30d)"].map((h) => (
               <span key={h || "dot"} style={{ color: p.textMuted, fontSize: 12 }}>
                 {h}
@@ -760,7 +818,12 @@ function AppView({ api, app, days }: { api: PluginApi; app: Json; days: Day[] })
         )}
         {audKeys.map((k) => (
           <Section key={k} api={api} title={`Daily ${titleCase(k)}`}>
-            <LineChart api={api} points={audDays.map((d) => ({ label: shortDate(String(d.date)), value: typeof d[k] === "number" ? d[k] : null }))} format={axisFmt(k)} />
+            <LineChart
+              api={api}
+              labels={audDays.map((d) => shortDate(String(d.date)))}
+              series={[{ name: titleCase(k), color: p.accent, values: audDays.map((d) => (typeof d[k] === "number" ? d[k] : null)) }]}
+              format={axisFmt(k)}
+            />
           </Section>
         ))}
         {aud?.sources30d && !isErrorNode(aud.sources30d) && (
@@ -820,7 +883,8 @@ export function Component({ api }: { api: PluginApi; paneId?: string }) {
   const days = allDays();
   const age = data ? ageHours(data.generatedAt) : null;
   const stale = data && (age === null || age > STALE_HOURS);
-  const current = tab === "overview" ? null : apps.find((a) => a.name === tab);
+  const tabApps = apps.filter((a) => !(a.name in OVERVIEW_ONLY_APPS));
+  const current = tab === "overview" ? null : tabApps.find((a) => a.name === tab);
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 12, color: palette.text }}>
@@ -839,7 +903,7 @@ export function Component({ api }: { api: PluginApi; paneId?: string }) {
       {data && (
         <>
           <Tabs
-            tabs={[{ label: "Overview", value: "overview" }, ...apps.map((a) => ({ label: a.name as string, value: a.name as string }))]}
+            tabs={[{ label: "Overview", value: "overview" }, ...tabApps.map((a) => ({ label: a.name as string, value: a.name as string }))]}
             value={current ? tab : "overview"}
             onChange={setTab}
           />
