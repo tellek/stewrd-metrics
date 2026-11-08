@@ -114,6 +114,12 @@ function valueTone(key: string, v: Json): StatusColor | null {
   return null;
 }
 
+/** Worst of the given tones, ignoring nulls; null when none are set. */
+function worstTone(tones: (StatusColor | null | undefined)[]): StatusColor | null {
+  const set = tones.filter((t): t is StatusColor => !!t);
+  return set.length ? worst(set) : null;
+}
+
 /** Worst tone of any value in a group: firing alarms -> error; 5xx, stale states or unknown sections -> warning. */
 function groupTone(v: Json): StatusColor | null {
   if (isErrorNode(v)) return "warning";
@@ -488,7 +494,23 @@ function BarList({ api, rows }: { api: PluginApi; rows: BarRow[] }) {
   );
 }
 
-function Tile({ api, label, value, delta, tone }: { api: PluginApi; label: string; value: string; delta?: string | null; tone?: StatusColor | null }) {
+/** `tone` colors the value and border (fixed rules); `outline` only colors the border (average deviation). */
+function Tile({
+  api,
+  label,
+  value,
+  delta,
+  tone,
+  outline,
+}: {
+  api: PluginApi;
+  label: string;
+  value: string;
+  delta?: string[];
+  tone?: StatusColor | null;
+  outline?: StatusColor | null;
+}) {
+  const border = worstTone([tone, outline]);
   const p = api.theme.palette;
   return (
     <div
@@ -496,7 +518,7 @@ function Tile({ api, label, value, delta, tone }: { api: PluginApi; label: strin
         minWidth: 0,
         boxSizing: "border-box",
         background: p.surface,
-        border: `1px solid ${tone ? p.status[tone] : p.border}`,
+        border: `1px solid ${border ? p.status[border] : p.border}`,
         borderRadius: 6,
         padding: "10px 12px",
         display: "flex",
@@ -506,7 +528,11 @@ function Tile({ api, label, value, delta, tone }: { api: PluginApi; label: strin
     >
       <span style={{ color: p.textMuted, fontSize: 12 }}>{label}</span>
       <span style={{ fontSize: 22, lineHeight: "30px", fontWeight: 600, fontVariantNumeric: "tabular-nums", color: tone ? p.status[tone] : undefined }}>{value}</span>
-      {delta && <span style={{ color: p.textMuted, fontSize: 12 }}>{delta}</span>}
+      {delta?.map((d) => (
+        <span key={d} style={{ color: p.textMuted, fontSize: 12 }}>
+          {d}
+        </span>
+      ))}
     </div>
   );
 }
@@ -579,7 +605,38 @@ function trendTile(api: PluginApi, days: Day[], t: Trend) {
     const abs = MONEY_KEY.test(t.key) ? money.format(Math.abs(d)) : Math.abs(d).toLocaleString();
     delta = `${d > 0 ? "+" : d < 0 ? "-" : "±"}${abs} vs ${shortDate(days[days.length - 2].date)}`;
   }
-  return <Tile key={t.title} api={api} label={t.title} value={fmt(cur, t.key)} delta={delta} tone={valueTone(t.key, cur)} />;
+  const avg = averageCheck(vals);
+  const avgText = avg ? `${avg.change >= 0 ? "+" : "-"}${Math.round(Math.abs(avg.change) * 100)}% vs ${axisFmt(t.key)(avg.avg)} avg` : null;
+  return (
+    <Tile
+      key={t.title}
+      api={api}
+      label={t.title}
+      value={fmt(cur, t.key)}
+      delta={[delta, avgText].filter((d): d is string => !!d)}
+      tone={valueTone(t.key, cur)}
+      outline={avg?.tone}
+    />
+  );
+}
+
+const AVG_MIN_DAYS = 3;
+const AVG_WARNING = 1; // 100% away from the average
+const AVG_ERROR = 5; // 500% away from the average
+
+/**
+ * Compares the latest value with the average of every earlier day in history.
+ * Null until there are AVG_MIN_DAYS earlier known values, or when the average is 0 (no percentage exists).
+ */
+function averageCheck(vals: (number | null | undefined)[]): { avg: number; change: number; tone: StatusColor | null } | null {
+  const cur = vals[vals.length - 1];
+  const prev = vals.slice(0, -1).filter((v): v is number => typeof v === "number");
+  if (typeof cur !== "number" || prev.length < AVG_MIN_DAYS) return null;
+  const avg = prev.reduce((a, b) => a + b, 0) / prev.length;
+  if (avg === 0) return null;
+  const change = (cur - avg) / Math.abs(avg);
+  const dev = Math.abs(change);
+  return { avg, change, tone: dev >= AVG_ERROR ? "error" : dev >= AVG_WARNING ? "warning" : null };
 }
 
 /** One card per trend that has data; rendered as a fragment so the cards join the surrounding Flow. */
@@ -590,7 +647,12 @@ function TrendCharts({ api, days, trends }: { api: PluginApi; days: Day[]; trend
         .map((t) => ({ t, points: days.map((d) => ({ label: shortDate(d.date), raw: t.get(d.doc) })) }))
         .filter(({ points }) => points.some((pt) => pt.raw !== undefined))
         .map(({ t, points }) => (
-          <Section key={t.title} api={api} title={`${t.title} Trend`}>
+          <Section
+            key={t.title}
+            api={api}
+            title={`${t.title} Trend`}
+            tone={worstTone([valueTone(t.key, points[points.length - 1]?.raw), averageCheck(points.map((pt) => pt.raw))?.tone])}
+          >
             <LineChart
               api={api}
               labels={points.map((pt) => pt.label)}
