@@ -453,7 +453,7 @@ function Tile({ api, label, value, delta }: { api: PluginApi; label: string; val
   const p = api.theme.palette;
   return (
     <div
-      style={{ flex: "1 1 0", minWidth: 130, boxSizing: "border-box", background: p.surface, border: `1px solid ${p.border}`, borderRadius: 6, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 2 }}
+      style={{ minWidth: 0, boxSizing: "border-box", background: p.surface, border: `1px solid ${p.border}`, borderRadius: 6, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 2 }}
     >
       <span style={{ color: p.textMuted, fontSize: 12 }}>{label}</span>
       <span style={{ fontSize: 22, lineHeight: "30px", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{value}</span>
@@ -463,6 +463,22 @@ function Tile({ api, label, value, delta }: { api: PluginApi; label: string; val
 }
 
 /** Wrapping row of cards: every row is filled edge to edge and its cards share one height. */
+const TILE_MIN = 130;
+const GAP = 12;
+
+/** Stat tiles in equal columns; when they don't fit on one row they split into balanced rows (6 -> 3+3 -> 2+2+2). */
+function TileRow({ children }: { children: ReactNode[] }) {
+  const [ref, width] = useWidth();
+  const n = Math.max(1, children.length);
+  const fit = Math.max(1, Math.floor((width + GAP) / (TILE_MIN + GAP)));
+  const cols = width ? Math.ceil(n / Math.ceil(n / Math.min(fit, n))) : n;
+  return (
+    <div ref={ref} style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap: GAP }}>
+      {children}
+    </div>
+  );
+}
+
 const Flow = ({ children }: { children: ReactNode }) => <div style={{ display: "flex", flexWrap: "wrap", alignItems: "stretch", gap: 12 }}>{children}</div>;
 
 function Section({ api, title, extra, children }: { api: PluginApi; title: string; extra?: ReactNode; children: ReactNode }) {
@@ -563,7 +579,7 @@ function Overview({ api, doc, days }: { api: PluginApi; doc: Json; days: Day[] }
   const cost = doc.awsCost;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <Flow>{OVERVIEW_TRENDS.filter((t) => t.get(doc) !== undefined).map((t) => trendTile(api, days, t))}</Flow>
+      <TileRow>{OVERVIEW_TRENDS.filter((t) => t.get(doc) !== undefined).map((t) => trendTile(api, days, t))}</TileRow>
       <HistoryHint api={api} days={days} />
       <Flow>
         <TrendCharts api={api} days={days} trends={OVERVIEW_TRENDS.slice(0, 3)} />
@@ -691,7 +707,7 @@ function AppView({ api, app, days }: { api: PluginApi; app: Json; days: Day[] })
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <Flow>{APP_TRENDS.filter((t) => t.get(app) !== undefined).map((t) => trendTile(api, appDays, t))}</Flow>
+      <TileRow>{APP_TRENDS.filter((t) => t.get(app) !== undefined).map((t) => trendTile(api, appDays, t))}</TileRow>
       <HistoryHint api={api} days={appDays} />
       <Flow>
         <TrendCharts api={api} days={appDays} trends={APP_TRENDS} />
