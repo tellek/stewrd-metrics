@@ -843,7 +843,7 @@ export function Component({ api }: { api: PluginApi; paneId?: string }) {
             value={current ? tab : "overview"}
             onChange={setTab}
           />
-          <div style={{ ...scrollbarStyle(palette), flex: 1, minHeight: 0, overflow: "auto" }}>
+          <div style={{ ...scrollbarStyle(palette), flex: 1, minHeight: 0, overflow: "auto", paddingRight: GAP }}>
             {current ? <AppView api={api} app={current} days={days} /> : <Overview api={api} doc={data} days={days} />}
           </div>
         </>
