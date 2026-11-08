@@ -605,7 +605,7 @@ function trendTile(api: PluginApi, days: Day[], t: Trend) {
     const abs = MONEY_KEY.test(t.key) ? money.format(Math.abs(d)) : Math.abs(d).toLocaleString();
     delta = `${d > 0 ? "+" : d < 0 ? "-" : "±"}${abs} vs ${shortDate(days[days.length - 2].date)}`;
   }
-  const avg = averageCheck(vals);
+  const avg = averageCheck(vals, ERROR_KEYS.has(t.key));
   const avgText = avg ? `${avg.change >= 0 ? "+" : "-"}${Math.round(Math.abs(avg.change) * 100)}% vs ${axisFmt(t.key)(avg.avg)} avg` : null;
   return (
     <Tile
@@ -620,6 +620,9 @@ function trendTile(api: PluginApi, days: Day[], t: Trend) {
   );
 }
 
+/** Metrics where higher is worse; valueTone colors any non-zero value of these. */
+const ERROR_KEYS = new Set(["inAlarm", "lambdaErrors", "errors5xx"]);
+
 const AVG_MIN_DAYS = 3;
 const AVG_WARNING = 1; // 100% away from the average
 const AVG_ERROR = 5; // 500% away from the average
@@ -627,15 +630,16 @@ const AVG_ERROR = 5; // 500% away from the average
 /**
  * Compares the latest value with the average of every earlier day in history.
  * Null until there are AVG_MIN_DAYS earlier known values, or when the average is 0 (no percentage exists).
+ * `upOnly` (error-type metrics): only a rise above the average counts; falling errors are good news.
  */
-function averageCheck(vals: (number | null | undefined)[]): { avg: number; change: number; tone: StatusColor | null } | null {
+function averageCheck(vals: (number | null | undefined)[], upOnly = false): { avg: number; change: number; tone: StatusColor | null } | null {
   const cur = vals[vals.length - 1];
   const prev = vals.slice(0, -1).filter((v): v is number => typeof v === "number");
   if (typeof cur !== "number" || prev.length < AVG_MIN_DAYS) return null;
   const avg = prev.reduce((a, b) => a + b, 0) / prev.length;
   if (avg === 0) return null;
   const change = (cur - avg) / Math.abs(avg);
-  const dev = Math.abs(change);
+  const dev = upOnly ? change : Math.abs(change);
   return { avg, change, tone: dev >= AVG_ERROR ? "error" : dev >= AVG_WARNING ? "warning" : null };
 }
 
@@ -651,7 +655,12 @@ function TrendCharts({ api, days, trends }: { api: PluginApi; days: Day[]; trend
             key={t.title}
             api={api}
             title={`${t.title} Trend`}
-            tone={worstTone([valueTone(t.key, points[points.length - 1]?.raw), averageCheck(points.map((pt) => pt.raw))?.tone])}
+            tone={
+              averageCheck(
+                points.map((pt) => pt.raw),
+                ERROR_KEYS.has(t.key),
+              )?.tone
+            }
           >
             <LineChart
               api={api}
@@ -704,7 +713,7 @@ function InvocationsTrend({ api, days, appName, title }: { api: PluginApi; days:
     { name: "Errors", color: p.status.error, values: appDays.map((d) => lambdaSum(d.app, "errors") ?? null) },
   ];
   return (
-    <Section api={api} title={title} tone={valueTone("lambdaErrors", series[1].values[series[1].values.length - 1])} extra={<Legend api={api} items={series} />}>
+    <Section api={api} title={title} tone={averageCheck(series[1].values, true)?.tone} extra={<Legend api={api} items={series} />}>
       <LineChart api={api} labels={appDays.map((d) => shortDate(d.date))} series={series} format={axisFmt("")} />
     </Section>
   );
