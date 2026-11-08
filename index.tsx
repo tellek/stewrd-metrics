@@ -72,7 +72,7 @@ function fmt(v: Json, key = ""): string {
 /** Table cell: "-" when the app has no such metric, otherwise fmt (so unknown stays "Unknown"). */
 const cell = (v: number | null | undefined, key = "") => (v === undefined ? "-" : fmt(v, key));
 
-const axisFmt =(key: string) => (n: number) => (MONEY_KEY.test(key) ? money.format(n) : compact.format(n));
+const axisFmt = (key: string) => (n: number) => (MONEY_KEY.test(key) ? money.format(n) : compact.format(n));
 
 function ageHours(iso: string | undefined): number | null {
   const t = iso ? Date.parse(iso) : NaN;
@@ -98,7 +98,9 @@ function metric(o: Json, path: string): number | null | undefined {
 /** Sums a metric across apps; any unknown app value makes the total unknown. */
 function sumApps(doc: Json, path: string): number | null | undefined {
   if (!doc || isErrorNode(doc.apps)) return null;
-  const vals = appsOf(doc).map((a) => metric(a, path)).filter((v) => v !== undefined);
+  const vals = appsOf(doc)
+    .map((a) => metric(a, path))
+    .filter((v) => v !== undefined);
   if (vals.length === 0) return undefined;
   return vals.some((v) => v === null) ? null : (vals as number[]).reduce((a, b) => a + b, 0);
 }
@@ -225,6 +227,8 @@ export async function activate(ctx: PluginContext) {
 
 // ---------- chart primitives ----------
 
+const CHART_HEIGHT = 170;
+
 const scrollbarStyle = (p: Palette): CSSProperties => ({ scrollbarWidth: "thin", scrollbarColor: `${p.border} ${p.surface}` });
 
 function useWidth() {
@@ -247,11 +251,11 @@ function niceMax(v: number): number {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
 }
 
-function Tooltip({ p, x, y, flip, children }: { p: Palette; x: number; y: number; flip: boolean; children: ReactNode }) {
+function Tooltip({ p, x, y, flip, fixed, children }: { p: Palette; x: number; y: number; flip: boolean; fixed?: boolean; children: ReactNode }) {
   return (
     <div
       style={{
-        position: "absolute",
+        position: fixed ? "fixed" : "absolute",
         left: x,
         top: y,
         transform: flip ? "translateX(-100%)" : undefined,
@@ -278,11 +282,14 @@ interface Pt {
 }
 
 /** Single-series line over time. Unknown (null) points break the line instead of dropping to zero. */
-function LineChart({ api, points, format, height = 150 }: { api: PluginApi; points: Pt[]; format: (n: number) => string; height?: number }) {
+function LineChart({ api, points, format, height = CHART_HEIGHT }: { api: PluginApi; points: Pt[]; format: (n: number) => string; height?: number }) {
   const p = api.theme.palette;
   const [ref, width] = useWidth();
   const [hover, setHover] = useState<number | null>(null);
-  const L = 56, R = 12, T = 10, B = 22;
+  const L = 56,
+    R = 12,
+    T = 10,
+    B = 22;
   const w = Math.max(1, width - L - R);
   const h = height - T - B;
   const n = points.length;
@@ -347,9 +354,7 @@ function LineChart({ api, points, format, height = 150 }: { api: PluginApi; poin
           {hover !== null && (
             <g pointerEvents="none">
               <line x1={x(hover)} x2={x(hover)} y1={T} y2={T + h} stroke={p.textMuted} strokeWidth={1} />
-              {points[hover].value !== null && (
-                <circle cx={x(hover)} cy={y(points[hover].value as number)} r={4.5} fill={p.accent} stroke={p.surface} strokeWidth={2} />
-              )}
+              {points[hover].value !== null && <circle cx={x(hover)} cy={y(points[hover].value as number)} r={4.5} fill={p.accent} stroke={p.surface} strokeWidth={2} />}
             </g>
           )}
           <rect x={L} y={0} width={w} height={height} fill="transparent" onMouseMove={onMove} onMouseLeave={() => setHover(null)} />
@@ -392,28 +397,22 @@ function Legend({ api, items }: { api: PluginApi; items: { name: string; color: 
   );
 }
 
-/** Horizontal (optionally stacked) bars sharing one scale, value labels at the end. */
+/** Horizontal (optionally stacked) bars sharing one scale, value labels at the end. Scrolls past BAR_LIST_HEIGHT. */
 function BarList({ api, rows }: { api: PluginApi; rows: BarRow[] }) {
   const p = api.theme.palette;
-  const [hover, setHover] = useState<{ i: number; x: number; y: number; w: number } | null>(null);
+  const [hover, setHover] = useState<{ i: number; x: number; y: number } | null>(null);
   const max = Math.max(0, ...rows.map((r) => r.segments.reduce((a, s) => a + s.value, 0))) || 1;
   if (rows.length === 0) return <span style={{ color: p.textMuted }}>None</span>;
+  const flip = hover !== null && hover.x > window.innerWidth - 200;
   return (
-    <div style={{ position: "relative" }} onMouseLeave={() => setHover(null)}>
+    <div style={{ ...scrollbarStyle(p), maxHeight: CHART_HEIGHT, overflowY: "auto", overflowX: "hidden" }} onMouseLeave={() => setHover(null)}>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, max-content) 1fr max-content", gap: "2px 12px", alignItems: "center", fontSize: 14 }}>
         {rows.map((r, i) => {
           const total = r.segments.reduce((a, s) => a + s.value, 0);
           const hot = hover?.i === i;
           const cell: CSSProperties = { background: hot ? p.surfaceHover : undefined, padding: "2px 0" };
           return (
-            <div
-              key={r.label}
-              style={{ display: "contents" }}
-              onMouseMove={(e) => {
-                const box = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
-                setHover({ i, x: e.clientX - box.left, y: e.clientY - box.top, w: box.width });
-              }}
-            >
+            <div key={r.label} style={{ display: "contents" }} onMouseMove={(e) => setHover({ i, x: e.clientX, y: e.clientY })}>
               <span style={{ ...cell, color: hot ? p.accent : p.text, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.label}>
                 {r.label}
               </span>
@@ -439,7 +438,7 @@ function BarList({ api, rows }: { api: PluginApi; rows: BarRow[] }) {
         })}
       </div>
       {hover && rows[hover.i] && (
-        <Tooltip p={p} x={hover.x + (hover.x > hover.w - 180 ? -12 : 12)} y={hover.y + 12} flip={hover.x > hover.w - 180}>
+        <Tooltip p={p} x={hover.x + (flip ? -12 : 12)} y={hover.y + 12} flip={flip} fixed>
           <div style={{ fontWeight: 600 }}>{rows[hover.i].label}</div>
           {rows[hover.i].tip.map((t) => (
             <div key={t}>{t}</div>
@@ -453,7 +452,9 @@ function BarList({ api, rows }: { api: PluginApi; rows: BarRow[] }) {
 function Tile({ api, label, value, delta }: { api: PluginApi; label: string; value: string; delta?: string | null }) {
   const p = api.theme.palette;
   return (
-    <div style={{ background: p.surface, border: `1px solid ${p.border}`, borderRadius: 6, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 2 }}>
+    <div
+      style={{ flex: "1 1 0", minWidth: 130, boxSizing: "border-box", background: p.surface, border: `1px solid ${p.border}`, borderRadius: 6, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 2 }}
+    >
       <span style={{ color: p.textMuted, fontSize: 12 }}>{label}</span>
       <span style={{ fontSize: 22, lineHeight: "30px", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{value}</span>
       {delta && <span style={{ color: p.textMuted, fontSize: 12 }}>{delta}</span>}
@@ -461,18 +462,26 @@ function Tile({ api, label, value, delta }: { api: PluginApi; label: string; val
   );
 }
 
-const Tiles = ({ children }: { children: ReactNode }) => (
-  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 12 }}>{children}</div>
-);
-
-const ChartGrid = ({ children }: { children: ReactNode }) => (
-  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12, alignItems: "start" }}>{children}</div>
-);
+/** Wrapping row of cards: every row is filled edge to edge and its cards share one height. */
+const Flow = ({ children }: { children: ReactNode }) => <div style={{ display: "flex", flexWrap: "wrap", alignItems: "stretch", gap: 12 }}>{children}</div>;
 
 function Section({ api, title, extra, children }: { api: PluginApi; title: string; extra?: ReactNode; children: ReactNode }) {
   const p = api.theme.palette;
   return (
-    <div style={{ background: p.surface, border: `1px solid ${p.border}`, borderRadius: 6, padding: 12, display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+    <div
+      style={{
+        flex: "1 1 320px",
+        boxSizing: "border-box",
+        background: p.surface,
+        border: `1px solid ${p.border}`,
+        borderRadius: 6,
+        padding: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        minWidth: 0,
+      }}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <strong style={{ flex: 1 }}>{title}</strong>
         {extra}
@@ -504,24 +513,25 @@ function trendTile(api: PluginApi, days: Day[], t: Trend) {
   return <Tile key={t.title} api={api} label={t.title} value={fmt(cur, t.key)} delta={delta} />;
 }
 
+/** One card per trend that has data; rendered as a fragment so the cards join the surrounding Flow. */
 function TrendCharts({ api, days, trends }: { api: PluginApi; days: Day[]; trends: Trend[] }) {
-  const p = api.theme.palette;
-  const shown = trends
-    .map((t) => ({ t, points: days.map((d) => ({ label: shortDate(d.date), raw: t.get(d.doc) })) }))
-    .filter(({ points }) => points.some((pt) => pt.raw !== undefined));
-  if (shown.length === 0) return null;
   return (
     <>
-      {days.length < 2 && <span style={{ color: p.textMuted, fontSize: 12 }}>Trends fill in as daily history accumulates ({days.length} day so far).</span>}
-      <ChartGrid>
-        {shown.map(({ t, points }) => (
+      {trends
+        .map((t) => ({ t, points: days.map((d) => ({ label: shortDate(d.date), raw: t.get(d.doc) })) }))
+        .filter(({ points }) => points.some((pt) => pt.raw !== undefined))
+        .map(({ t, points }) => (
           <Section key={t.title} api={api} title={`${t.title} Trend`}>
             <LineChart api={api} points={points.map((pt) => ({ label: pt.label, value: pt.raw ?? null }))} format={axisFmt(t.key)} />
           </Section>
         ))}
-      </ChartGrid>
     </>
   );
+}
+
+function HistoryHint({ api, days }: { api: PluginApi; days: Day[] }) {
+  if (days.length >= 2) return null;
+  return <span style={{ color: api.theme.palette.textMuted, fontSize: 12 }}>Trends fill in as daily history accumulates ({days.length} day so far).</span>;
 }
 
 function costRows(api: PluginApi, cost: Json): BarRow[] {
@@ -553,9 +563,10 @@ function Overview({ api, doc, days }: { api: PluginApi; doc: Json; days: Day[] }
   const cost = doc.awsCost;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <Tiles>{OVERVIEW_TRENDS.filter((t) => t.get(doc) !== undefined).map((t) => trendTile(api, days, t))}</Tiles>
-      <TrendCharts api={api} days={days} trends={OVERVIEW_TRENDS.slice(0, 3)} />
-      <ChartGrid>
+      <Flow>{OVERVIEW_TRENDS.filter((t) => t.get(doc) !== undefined).map((t) => trendTile(api, days, t))}</Flow>
+      <HistoryHint api={api} days={days} />
+      <Flow>
+        <TrendCharts api={api} days={days} trends={OVERVIEW_TRENDS.slice(0, 3)} />
         <Section api={api} title="Apps">
           <div style={{ display: "grid", gridTemplateColumns: "auto 1fr max-content max-content max-content", gap: "4px 16px", alignItems: "center" }}>
             {["", "App", "Requests", "Errors", "Profit (30d)"].map((h) => (
@@ -577,7 +588,7 @@ function Overview({ api, doc, days }: { api: PluginApi; doc: Json; days: Day[] }
         <Section api={api} title={`AWS Cost By Project${cost && !isErrorNode(cost) ? ` (${shortDate(cost.windowStart)} To ${shortDate(cost.windowEnd)})` : ""}`}>
           {!cost || isErrorNode(cost) ? <span>{fmt(cost)}</span> : <BarList api={api} rows={costRows(api, cost)} />}
         </Section>
-      </ChartGrid>
+      </Flow>
     </div>
   );
 }
@@ -680,69 +691,88 @@ function AppView({ api, app, days }: { api: PluginApi; app: Json; days: Day[] })
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <Tiles>{APP_TRENDS.filter((t) => t.get(app) !== undefined).map((t) => trendTile(api, appDays, t))}</Tiles>
-      <TrendCharts api={api} days={appDays} trends={APP_TRENDS} />
-      {mon && isErrorNode(mon) && (
-        <Section api={api} title="Monitoring (24h)">
-          <span>{fmt(mon)}</span>
-        </Section>
-      )}
-      {(apis?.length || lambdas?.rows.length) ? (
-        <ChartGrid>
-          {apis && apis.length > 0 && (
-            <Section
-              api={api}
-              title="API Requests (24h)"
-              extra={<Legend api={api} items={[{ name: "OK", color: p.accent }, { name: "4xx", color: p.status.warning }, { name: "5xx", color: p.status.error }]} />}
-            >
-              <BarList api={api} rows={apis} />
-            </Section>
-          )}
-          {lambdas && lambdas.rows.length > 0 && (
-            <Section api={api} title="Lambda Invocations (24h)" extra={<Legend api={api} items={[{ name: "Succeeded", color: p.accent }, { name: "Errors", color: p.status.error }]} />}>
-              <BarList api={api} rows={lambdas.rows} />
-              {(lambdas.idle > 0 || lambdas.unknown.length > 0) && (
-                <span style={{ color: p.textMuted, fontSize: 12 }}>
-                  {[lambdas.idle ? `${lambdas.idle} idle function${lambdas.idle > 1 ? "s" : ""} hidden` : "", lambdas.unknown.length ? `Unknown: ${lambdas.unknown.join(", ")}` : ""]
-                    .filter(Boolean)
-                    .join(". ")}
-                </span>
-              )}
-            </Section>
-          )}
-        </ChartGrid>
-      ) : null}
-      {audKeys.length > 0 && (
-        <ChartGrid>
-          {audKeys.map((k) => (
-            <Section key={k} api={api} title={`Daily ${titleCase(k)}`}>
-              <LineChart
+      <Flow>{APP_TRENDS.filter((t) => t.get(app) !== undefined).map((t) => trendTile(api, appDays, t))}</Flow>
+      <HistoryHint api={api} days={appDays} />
+      <Flow>
+        <TrendCharts api={api} days={appDays} trends={APP_TRENDS} />
+        {mon && isErrorNode(mon) && (
+          <Section api={api} title="Monitoring (24h)">
+            <span>{fmt(mon)}</span>
+          </Section>
+        )}
+        {apis && apis.length > 0 && (
+          <Section
+            api={api}
+            title="API Requests (24h)"
+            extra={
+              <Legend
                 api={api}
-                points={audDays.map((d) => ({ label: shortDate(String(d.date)), value: typeof d[k] === "number" ? d[k] : null }))}
-                format={axisFmt(k)}
+                items={[
+                  { name: "OK", color: p.accent },
+                  { name: "4xx", color: p.status.warning },
+                  { name: "5xx", color: p.status.error },
+                ]}
               />
-            </Section>
-          ))}
-          {aud.sources30d && !isErrorNode(aud.sources30d) && (
-            <Section api={api} title="Traffic Sources (30d)">
-              <BarList
+            }
+          >
+            <BarList api={api} rows={apis} />
+          </Section>
+        )}
+        {lambdas && lambdas.rows.length > 0 && (
+          <Section
+            api={api}
+            title="Lambda Invocations (24h)"
+            extra={
+              <Legend
                 api={api}
-                rows={(Object.entries(aud.sources30d) as [string, Json][])
-                  .filter(([, v]) => typeof v === "number")
-                  .sort(([, a], [, b]) => b - a)
-                  .map(([k, v]) => ({ label: titleCase(k), segments: [{ name: "Views", value: v, color: p.accent }], valueText: v.toLocaleString(), tip: [`${v.toLocaleString()} views`] }))}
+                items={[
+                  { name: "Succeeded", color: p.accent },
+                  { name: "Errors", color: p.status.error },
+                ]}
               />
-            </Section>
-          )}
-        </ChartGrid>
-      )}
-      <ChartGrid>
-        {details.map(([k, v]) => (
-          <Section key={k} api={api} title={titleCase(k)}>
-            <Rows api={api} value={k === "audience" && v && !isErrorNode(v) ? Object.fromEntries(Object.entries(v).filter(([kk]) => kk !== "days" && kk !== "sources30d")) : v} path={k} />
+            }
+          >
+            <BarList api={api} rows={lambdas.rows} />
+            {(lambdas.idle > 0 || lambdas.unknown.length > 0) && (
+              <span style={{ color: p.textMuted, fontSize: 12 }}>
+                {[lambdas.idle ? `${lambdas.idle} idle function${lambdas.idle > 1 ? "s" : ""} hidden` : "", lambdas.unknown.length ? `Unknown: ${lambdas.unknown.join(", ")}` : ""]
+                  .filter(Boolean)
+                  .join(". ")}
+              </span>
+            )}
+          </Section>
+        )}
+        {audKeys.map((k) => (
+          <Section key={k} api={api} title={`Daily ${titleCase(k)}`}>
+            <LineChart api={api} points={audDays.map((d) => ({ label: shortDate(String(d.date)), value: typeof d[k] === "number" ? d[k] : null }))} format={axisFmt(k)} />
           </Section>
         ))}
-      </ChartGrid>
+        {aud?.sources30d && !isErrorNode(aud.sources30d) && (
+          <Section api={api} title="Traffic Sources (30d)">
+            <BarList
+              api={api}
+              rows={(Object.entries(aud.sources30d) as [string, Json][])
+                .filter(([, v]) => typeof v === "number")
+                .sort(([, a], [, b]) => b - a)
+                .map(([k, v]) => ({
+                  label: titleCase(k),
+                  segments: [{ name: "Views", value: v, color: p.accent }],
+                  valueText: v.toLocaleString(),
+                  tip: [`${v.toLocaleString()} views`],
+                }))}
+            />
+          </Section>
+        )}
+        {details.map(([k, v]) => (
+          <Section key={k} api={api} title={titleCase(k)}>
+            <Rows
+              api={api}
+              value={k === "audience" && v && !isErrorNode(v) ? Object.fromEntries(Object.entries(v).filter(([kk]) => kk !== "days" && kk !== "sources30d")) : v}
+              path={k}
+            />
+          </Section>
+        ))}
+      </Flow>
     </div>
   );
 }
@@ -781,7 +811,9 @@ export function Component({ api }: { api: PluginApi; paneId?: string }) {
       <div style={{ display: "flex", alignItems: "center", gap: 12, paddingRight: 24 }}>
         <h2 style={{ margin: 0 }}>{NAME}</h2>
         <span style={{ color: palette.textMuted, flex: 1 }}>
-          {data ? `Generated ${data.generatedAt ? new Date(data.generatedAt).toLocaleString() : "Unknown"} · ${days.length} Day${days.length === 1 ? "" : "s"} Of History` : "No Data Yet"}
+          {data
+            ? `Generated ${data.generatedAt ? new Date(data.generatedAt).toLocaleString() : "Unknown"} · ${days.length} Day${days.length === 1 ? "" : "s"} Of History`
+            : "No Data Yet"}
         </span>
         {loading && <Spinner size={16} />}
         <TextButton label="Refresh" variant="primary" disabled={loading} onClick={() => void refresh(api)} />
