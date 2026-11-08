@@ -1,4 +1,7 @@
 {
   "category": "Utilities",
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "bucket": "boxopher-metrics-429357724212",
+  "refreshMinutes": 60,
+  "awsProfile": ""
 }
