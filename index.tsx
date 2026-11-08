@@ -30,13 +30,15 @@ interface State {
   data: Json | null;
   history: Day[];
   error: string | null;
-  loading: boolean;
 }
 
-let state: State = { data: null, history: [], error: null, loading: false };
+let state: State = { data: null, history: [], error: null };
+let refreshing = false;
 const listeners = new Set<() => void>();
 
+/** Skips unchanged values so background refreshes don't re-render the pane. */
 function setState(patch: Partial<State>) {
+  if ((Object.keys(patch) as (keyof State)[]).every((k) => JSON.stringify(patch[k]) === JSON.stringify(state[k]))) return;
   state = { ...state, ...patch };
   listeners.forEach((l) => l());
 }
@@ -202,8 +204,8 @@ async function syncHistory(api: PluginApi, bucket: string) {
 }
 
 async function refresh(api: PluginApi, signal?: AbortSignal) {
-  if (state.loading) return;
-  setState({ loading: true });
+  if (refreshing) return;
+  refreshing = true;
   const setIcon = (c: StatusColor, tip?: string) => {
     if (signal?.aborted) return;
     try {
@@ -235,14 +237,15 @@ async function refresh(api: PluginApi, signal?: AbortSignal) {
       status = worst([status, "warning"]);
       tip = `History sync failed: ${msg}`;
     }
-    setState({ loading: false });
     // The icon only signals problems; anything short of warning stays idle (default tint).
     setIcon(status === "warning" || status === "error" ? status : "idle", tip);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    setState({ error: msg, loading: false });
+    setState({ error: msg });
     setIcon("error", msg);
     log("error", msg);
+  } finally {
+    refreshing = false;
   }
 }
 
@@ -962,7 +965,7 @@ function AppView({ api, app, days }: { api: PluginApi; app: Json; days: Day[] })
 }
 
 export function Component({ api }: { api: PluginApi; paneId?: string }) {
-  const { TextButton, Tabs, Banner, Spinner } = api.ui;
+  const { TextButton, Tabs, Banner } = api.ui;
   const palette = api.theme.palette;
   const [, force] = useState(0);
   const [tab, setTab] = useState("overview");
@@ -983,7 +986,7 @@ export function Component({ api }: { api: PluginApi; paneId?: string }) {
     };
   }, [api]);
 
-  const { data, error, loading } = state;
+  const { data, error } = state;
   const apps = appsOf(data);
   const days = allDays();
   const age = data ? ageHours(data.generatedAt) : null;
@@ -1000,8 +1003,7 @@ export function Component({ api }: { api: PluginApi; paneId?: string }) {
             ? `Generated ${data.generatedAt ? new Date(data.generatedAt).toLocaleString() : "Unknown"} · ${days.length} Day${days.length === 1 ? "" : "s"} Of History`
             : "No Data Yet"}
         </span>
-        {loading && <Spinner size={16} />}
-        <TextButton label="Refresh" variant="primary" disabled={loading} onClick={() => void refresh(api)} />
+        <TextButton label="Refresh" variant="primary" onClick={() => void refresh(api)} />
       </div>
       {error && <Banner message={`Could Not Load Metrics: ${error}`} tone="error" />}
       {stale && <Banner message={`Metrics Are Older Than ${STALE_HOURS} Hours; The Daily Collector May Have Failed`} tone="warning" />}
