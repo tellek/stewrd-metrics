@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import type { PluginContext, PluginApi, StatusColor, Palette } from "stewrd-plugin-api";
+import refreshIcon from "./assets/refresh.png";
 
 const NAME = "Metrics";
 const STALE_HOURS = 26;
@@ -30,9 +31,11 @@ interface State {
   data: Json | null;
   history: Day[];
   error: string | null;
+  /** Only manual refreshes show the spinner; background ones stay invisible. */
+  spinning: boolean;
 }
 
-let state: State = { data: null, history: [], error: null };
+let state: State = { data: null, history: [], error: null, spinning: false };
 let refreshing = false;
 const listeners = new Set<() => void>();
 
@@ -203,7 +206,8 @@ async function syncHistory(api: PluginApi, bucket: string) {
   await loadHistory(api);
 }
 
-async function refresh(api: PluginApi, signal?: AbortSignal) {
+async function refresh(api: PluginApi, signal?: AbortSignal, manual = false) {
+  if (manual) setState({ spinning: true });
   if (refreshing) return;
   refreshing = true;
   const setIcon = (c: StatusColor, tip?: string) => {
@@ -246,6 +250,7 @@ async function refresh(api: PluginApi, signal?: AbortSignal) {
     log("error", msg);
   } finally {
     refreshing = false;
+    setState({ spinning: false });
   }
 }
 
@@ -965,7 +970,7 @@ function AppView({ api, app, days }: { api: PluginApi; app: Json; days: Day[] })
 }
 
 export function Component({ api }: { api: PluginApi; paneId?: string }) {
-  const { TextButton, Tabs, Banner } = api.ui;
+  const { IconButton, Spinner, Tabs, Banner } = api.ui;
   const palette = api.theme.palette;
   const [, force] = useState(0);
   const [tab, setTab] = useState("overview");
@@ -986,7 +991,7 @@ export function Component({ api }: { api: PluginApi; paneId?: string }) {
     };
   }, [api]);
 
-  const { data, error } = state;
+  const { data, error, spinning } = state;
   const apps = appsOf(data);
   const days = allDays();
   const age = data ? ageHours(data.generatedAt) : null;
@@ -1003,7 +1008,7 @@ export function Component({ api }: { api: PluginApi; paneId?: string }) {
             ? `Generated ${data.generatedAt ? new Date(data.generatedAt).toLocaleString() : "Unknown"} · ${days.length} Day${days.length === 1 ? "" : "s"} Of History`
             : "No Data Yet"}
         </span>
-        <TextButton label="Refresh" variant="primary" onClick={() => void refresh(api)} />
+        {spinning ? <Spinner size={16} /> : <IconButton label="Refresh" icon={refreshIcon} onClick={() => void refresh(api, undefined, true)} />}
       </div>
       {error && <Banner message={`Could Not Load Metrics: ${error}`} tone="error" />}
       {stale && <Banner message={`Metrics Are Older Than ${STALE_HOURS} Hours; The Daily Collector May Have Failed`} tone="warning" />}
